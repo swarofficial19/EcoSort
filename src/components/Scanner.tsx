@@ -42,39 +42,83 @@ export const Scanner: React.FC<ScannerProps> = ({ onSearchItem, onExploreCategor
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
-  const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
-  const ALLOWED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024; // 25MB raw file accepted, compressed client-side
+
+  // Downscale and compress image for fast, reliable vision API processing
+  const optimizeImage = (file: File): Promise<{ dataUrl: string; mimeType: string }> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const reader = new FileReader();
+
+      reader.onload = () => {
+        img.onload = () => {
+          let width = img.width;
+          let height = img.height;
+          const maxDim = 1280;
+
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve({ dataUrl: reader.result as string, mimeType: file.type || 'image/jpeg' });
+            return;
+          }
+
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+
+          // Always produce a clean, standard JPEG
+          const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.88);
+          resolve({ dataUrl: jpegDataUrl, mimeType: 'image/jpeg' });
+        };
+
+        img.onerror = () => {
+          // If canvas can't decode, resolve with raw data
+          resolve({ dataUrl: reader.result as string, mimeType: file.type || 'image/jpeg' });
+        };
+
+        img.src = reader.result as string;
+      };
+
+      reader.onerror = () => reject(new Error('Failed to read image file'));
+      reader.readAsDataURL(file);
+    });
+  };
 
   // Handle file selection
-  const processFile = (file: File) => {
+  const processFile = async (file: File) => {
     setErrorMessage(null);
 
-    // Validate type
-    if (!ALLOWED_TYPES.includes(file.type.toLowerCase())) {
-      setErrorMessage('Please upload a JPG, PNG, JPEG, or WEBP image.');
-      return;
-    }
-
-    // Validate size
+    // Validate size before compression
     if (file.size > MAX_FILE_SIZE_BYTES) {
-      setErrorMessage('Please upload an image smaller than 10 MB.');
+      setErrorMessage('Please upload an image smaller than 25 MB.');
       return;
     }
 
     setFileName(file.name);
     setFileSize((file.size / (1024 * 1024)).toFixed(2) + ' MB');
-    setSelectedMimeType(file.type);
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      setSelectedImage(reader.result as string);
+    try {
+      const optimized = await optimizeImage(file);
+      setSelectedImage(optimized.dataUrl);
+      setSelectedMimeType(optimized.mimeType);
       setScanStage('idle');
       setAnalysisResult(null);
-    };
-    reader.onerror = () => {
+    } catch {
       setErrorMessage('Failed to read the image file. Please try another image.');
-    };
-    reader.readAsDataURL(file);
+    }
   };
 
   // Drag & drop handlers
@@ -188,14 +232,16 @@ export const Scanner: React.FC<ScannerProps> = ({ onSearchItem, onExploreCategor
       console.error('Analysis error:', err);
       setScanStage('error');
       const errStr = err?.message || '';
-      if (errStr.includes('smaller than 10 MB')) {
-        setErrorMessage('Please upload an image smaller than 10 MB.');
+      if (errStr.includes('smaller than 10 MB') || errStr.includes('smaller than 25 MB')) {
+        setErrorMessage('Please upload an image smaller than 25 MB.');
       } else if (errStr.includes('JPG, PNG')) {
         setErrorMessage('Please upload a JPG, PNG, JPEG, or WEBP image.');
       } else if (errStr.includes('Failed to fetch') || errStr.includes('NetworkError')) {
-        setErrorMessage('Unable to connect to the analysis service. Please try again.');
+        setErrorMessage('Unable to connect to the analysis service. Please check your network connection.');
+      } else if (errStr.includes('high model demand') || errStr.includes('503')) {
+        setErrorMessage('EcoSort AI model is currently under high demand. Please click "Retry" below to analyze again.');
       } else {
-        setErrorMessage('EcoSort AI is temporarily unavailable. Try again or search manually.');
+        setErrorMessage(errStr || 'EcoSort AI is temporarily unavailable. Try again or search manually.');
       }
     } finally {
       clearTimeout(timer1);
@@ -247,18 +293,43 @@ export const Scanner: React.FC<ScannerProps> = ({ onSearchItem, onExploreCategor
 
       {/* Error alert if present */}
       {errorMessage && (
-        <div className="mb-6 p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 flex items-start gap-3 text-sm">
-          <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <p className="font-semibold text-rose-900">Notice</p>
-            <p className="mt-0.5">{errorMessage}</p>
+        <div className="mb-6 p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 shadow-xs">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            <div className="flex-1 space-y-2">
+              <div>
+                <p className="font-bold text-rose-950 text-sm">Notice</p>
+                <p className="mt-0.5 text-xs sm:text-sm text-rose-800">{errorMessage}</p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {selectedImage && (
+                  <button
+                    type="button"
+                    onClick={handleAnalyze}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold transition-colors"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Retry Analysis</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onSearchItem('')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-rose-200 text-rose-800 hover:bg-rose-100 text-xs font-semibold transition-colors"
+                >
+                  <Search className="w-3.5 h-3.5 text-rose-600" />
+                  <span>Search Database Instead</span>
+                </button>
+              </div>
+            </div>
+            <button
+              onClick={() => setErrorMessage(null)}
+              className="text-rose-400 hover:text-rose-700 p-1"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
-          <button
-            onClick={() => setErrorMessage(null)}
-            className="text-rose-500 hover:text-rose-700"
-          >
-            <X className="w-4 h-4" />
-          </button>
         </div>
       )}
 
