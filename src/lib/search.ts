@@ -55,7 +55,7 @@ export function searchWasteDatabase(filters: SearchFilters): WasteItem[] {
  * Normalizes text for matching AI output with database items
  */
 export function normalizeWasteName(name: string): string {
-  return name
+  return (name || '')
     .toLowerCase()
     .replace(/[^\w\s]/g, '')
     .trim();
@@ -63,35 +63,67 @@ export function normalizeWasteName(name: string): string {
 
 /**
  * Finds the best match in the waste database for a name produced by AI.
- * Uses exact match, alias match, and token-overlap scoring.
+ * Prioritizes category alignment, exact match, alias match, and token-overlap scoring.
  */
-export function findBestDatabaseMatch(aiDetectedName: string, categoryHint?: WasteCategory): WasteItem | null {
+export function findBestDatabaseMatch(
+  aiDetectedName: string,
+  categoryHint?: WasteCategory
+): WasteItem | null {
   const normalized = normalizeWasteName(aiDetectedName);
-  if (!normalized) return null;
+  if (!normalized || normalized.length < 3) return null;
 
-  // 1. Direct name match
-  const exact = WASTE_ITEMS.find(
-    (item) => normalizeWasteName(item.name) === normalized
-  );
+  // Filter items if categoryHint is specific and valid
+  const targetPool =
+    categoryHint && categoryHint !== 'Other / Unknown'
+      ? WASTE_ITEMS.filter((item) => item.category === categoryHint)
+      : WASTE_ITEMS;
+
+  // 1. Direct exact name match in target pool first, then all items
+  const exact =
+    targetPool.find((item) => normalizeWasteName(item.name) === normalized) ||
+    WASTE_ITEMS.find((item) => normalizeWasteName(item.name) === normalized);
   if (exact) return exact;
 
   // 2. Direct alias match
-  const aliasMatch = WASTE_ITEMS.find((item) =>
-    item.aliases.some((alias) => normalizeWasteName(alias) === normalized)
-  );
+  const aliasMatch =
+    targetPool.find((item) =>
+      item.aliases.some((alias) => normalizeWasteName(alias) === normalized)
+    ) ||
+    WASTE_ITEMS.find((item) =>
+      item.aliases.some((alias) => normalizeWasteName(alias) === normalized)
+    );
   if (aliasMatch) return aliasMatch;
 
-  // 3. Substring inclusion
-  const substringMatch = WASTE_ITEMS.find(
-    (item) =>
-      normalized.includes(normalizeWasteName(item.name)) ||
-      normalizeWasteName(item.name).includes(normalized) ||
-      item.aliases.some((a) => normalized.includes(normalizeWasteName(a)))
-  );
-  if (substringMatch) return substringMatch;
+  // 3. Word-boundary or high-confidence substring match (only if normalized name is meaningful)
+  if (normalized.length >= 4) {
+    const wordBoundaryMatch =
+      targetPool.find((item) => {
+        const itemNameNorm = normalizeWasteName(item.name);
+        return (
+          itemNameNorm.includes(normalized) ||
+          normalized.includes(itemNameNorm) ||
+          item.aliases.some(
+            (a) =>
+              normalizeWasteName(a).includes(normalized) ||
+              normalized.includes(normalizeWasteName(a))
+          )
+        );
+      }) ||
+      WASTE_ITEMS.find((item) => {
+        const itemNameNorm = normalizeWasteName(item.name);
+        return (
+          itemNameNorm.includes(normalized) ||
+          normalized.includes(itemNameNorm)
+        );
+      });
 
-  // 4. Token overlap scoring with optional category weighting
+    if (wordBoundaryMatch) return wordBoundaryMatch;
+  }
+
+  // 4. Token overlap scoring with category weighting
   const tokens = normalized.split(/\s+/).filter((t) => t.length > 2);
+  if (tokens.length === 0) return null;
+
   let bestScore = 0;
   let bestCandidate: WasteItem | null = null;
 
@@ -112,10 +144,11 @@ export function findBestDatabaseMatch(aiDetectedName: string, categoryHint?: Was
     }
 
     if (categoryHint && item.category === categoryHint) {
-      score += 2;
+      score += 4; // High weight on correct category
     }
 
-    if (score > bestScore && score >= 3) {
+    // Require high threshold so arbitrary words don't trigger false positives
+    if (score > bestScore && score >= 5) {
       bestScore = score;
       bestCandidate = item;
     }

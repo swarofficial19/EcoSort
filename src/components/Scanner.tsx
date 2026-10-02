@@ -102,15 +102,48 @@ export const Scanner: React.FC<ScannerProps> = ({ onSearchItem, onExploreCategor
     }
   };
 
+  // Rasterize SVG data URLs to clean PNG for vision AI
+  const rasterizeSvgToPng = (svgDataUrl: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = 600;
+          canvas.height = 600;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, 600, 600);
+            ctx.drawImage(img, 0, 0, 600, 600);
+            resolve(canvas.toDataURL('image/png'));
+            return;
+          }
+        } catch (e) {
+          console.warn('Canvas rasterization failed:', e);
+        }
+        resolve(svgDataUrl);
+      };
+      img.onerror = () => resolve(svgDataUrl);
+      img.src = svgDataUrl;
+    });
+  };
+
   // Preset sample click
-  const handleSelectSample = (sample: SampleItem) => {
+  const handleSelectSample = async (sample: SampleItem) => {
     setErrorMessage(null);
-    setSelectedImage(sample.dataUrl);
-    setSelectedMimeType('image/svg+xml');
     setFileName(`${sample.name}.png`);
     setFileSize('Standard Target');
+    setSelectedMimeType('image/png');
     setScanStage('idle');
     setAnalysisResult(null);
+
+    try {
+      const pngData = await rasterizeSvgToPng(sample.dataUrl);
+      setSelectedImage(pngData);
+    } catch {
+      setSelectedImage(sample.dataUrl);
+    }
   };
 
   // Clear current image
@@ -139,7 +172,15 @@ export const Scanner: React.FC<ScannerProps> = ({ onSearchItem, onExploreCategor
     const timer3 = setTimeout(() => setAnalysisProgressStep(4), 2000);
 
     try {
-      const result = await wasteAnalyzer.analyzeImage(selectedImage, selectedMimeType);
+      let imagePayload = selectedImage;
+      let mimePayload = selectedMimeType;
+
+      if (imagePayload.startsWith('data:image/svg+xml')) {
+        imagePayload = await rasterizeSvgToPng(imagePayload);
+        mimePayload = 'image/png';
+      }
+
+      const result = await wasteAnalyzer.analyzeImage(imagePayload, mimePayload);
       setAnalysisProgressStep(4);
       setAnalysisResult(result);
       setScanStage('complete');
