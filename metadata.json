@@ -1,0 +1,6 @@
+{
+  "name": "EcoSort",
+  "description": "AI-Powered E-Waste & Solid Waste Segregation Portal for instant item identification, categorization, and safe disposal guidance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
